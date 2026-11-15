@@ -1,1 +1,76 @@
+name: Build Android APK
 
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: barichello/godot-ci:4.2.2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Unzip game files (only if a .zip was uploaded)
+        shell: bash
+        run: |
+          if ls *.zip >/dev/null 2>&1; then
+            command -v unzip >/dev/null 2>&1 || (apt-get update && apt-get install -y unzip)
+            for z in *.zip; do unzip -o "$z" -x '.github/*'; done
+          fi
+          ls -la
+
+      - name: Prepare Godot and Android keystore
+        shell: bash
+        run: |
+          mkdir -p ~/.local/share/godot/export_templates ~/.config/godot
+          if [ "$HOME" != "/root" ]; then
+            if [ -d /root/.local/share/godot/export_templates/4.2.2.stable ]; then
+              cp -r /root/.local/share/godot/export_templates/4.2.2.stable ~/.local/share/godot/export_templates/
+            fi
+            if [ -f /root/.config/godot/editor_settings-4.tres ]; then
+              cp /root/.config/godot/editor_settings-4.tres ~/.config/godot/
+            fi
+          fi
+          keytool -genkeypair -v -keystore "$PWD/debug.keystore" -alias androiddebugkey \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass android -keypass android \
+            -dname "CN=Android Debug,O=Android,C=US"
+          echo "--- editor settings ---"
+          cat ~/.config/godot/editor_settings-4.tres || true
+
+      - name: Import project
+        shell: bash
+        run: godot --headless --editor --quit || true
+
+      - name: Export debug APK
+        shell: bash
+        env:
+          GODOT_ANDROID_KEYSTORE_DEBUG_PATH: ${{ github.workspace }}/debug.keystore
+          GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
+          GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
+        run: |
+          set -o pipefail
+          mkdir -p build
+          godot --headless --verbose --export-debug "Android" build/WildSurvival3D.apk 2>&1 | tee build/export.log
+          test -s build/WildSurvival3D.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: WildSurvival3D-debug-apk
+          path: build/WildSurvival3D.apk
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build/export.log
+          if-no-files-found: ignore
